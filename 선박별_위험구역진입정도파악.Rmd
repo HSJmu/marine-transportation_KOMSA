@@ -1,0 +1,119 @@
+---
+title: "선박별 epdo 계산"
+author: "HSJ"
+date: '2022-10-22'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+## 라이브러리 및 데이터 불러오기
+```{r setup, include=FALSE}
+library(tidyverse)
+library(sf)
+
+# vpass 데이터 하루치 불러오기
+v_1day <- read.csv("D:/v-pass/v-pass/vpass1year2020/2019_8-11/fnd_vpass_20190806_m.csv")
+setwd("C:/Users/user/Desktop/해양데이터/선박안전등급_산정")
+
+# 공간 데이터 불러오기 - epdo 계산된 격자로 바꾸기
+gid_3 <- readRDS("grid_epdo_5yr.rds")
+
+# 선박정보데이터 불러오기 - 최종 결과 붙히기 - RFID기준
+shipa <- read.csv("1년vpass_rfid결합.csv",fileEncoding = "cp949")
+
+```
+## 위경도 값 재계산
+```{r}
+v_1day <- v_1day %>% 
+  mutate(fshrbt_lon_val = fshrbt_lon_val/60/10000,
+         fshrbt_lat_val = fshrbt_lat_val/60/10000,
+         fshrbt_spd_val = fshrbt_spd_val/10,
+         fshrbt_drc_val = fshrbt_drc_val/10)
+
+```
+
+## 공간연산
+
+```{r}
+# 위치값 없는 행 파악
+v_1day$fshrbt_lat_val %>% is.na() %>% sum()
+v_1day$fshrbt_lon_val %>% is.na() %>% sum()
+
+# sf데이터로 바꾸기 및 crs 지정
+v_1day <-
+  st_as_sf(v_1day, coords = c("fshrbt_lon_val", "fshrbt_lat_val")) %>% st_set_crs(4326) 
+
+v_1day <- st_transform(v_1day, 27700)
+gid_3 <- st_transform(gid_3, 27700)
+
+# st_intersection을 사용해서 사고데이터에 각 사고의 격자데이터 id 넣기
+
+v_1day_gid3 <- st_intersection(v_1day, gid_3)
+```
+
+## 각 선박 별(fshrbt_rfid)로 epdo합 계산
+```{r}
+v_1day_gid3$EPDO %>% unique()
+v_1_epdo <- v_1day_gid3 %>%st_drop_geometry() %>%  group_by(fshrbt_rfid) %>% summarise(epdo_sum = sum(EPDO))
+
+ship_plus <- left_join(shipa,v_1_epdo,by=c("RFID"="fshrbt_rfid"))
+```
+
+
+# 위의 과정 for문으로 돌리기
+```{r}
+library(tidyverse)
+library(sf)
+
+# vpass 데이터 하루치 불러오기
+v_1day <- read.csv("D:/v-pass/v-pass/vpass1year2020/2019_8-11/fnd_vpass_20190806_m.csv")
+setwd("C:/Users/user/Desktop/해양데이터/선박안전등급_산정")
+
+# 공간 데이터 불러오기 - epdo 계산된 격자로 바꾸기
+gid_3 <- readRDS("grid_epdo_5yr.rds")
+gid_3 <- st_transform(gid_3, 27700)
+
+# 선박정보데이터 불러오기 - 최종 결과 붙히기 - RFID기준
+shipa <- read.csv("1년vpass_rfid결합.csv",fileEncoding = "cp949")
+
+# 데이터 한번에 불러오기
+## 파일 경로
+dir <- c("D:/v-pass/v-pass/vpass1year2020/1년_1달씩")
+
+# 폴더 내 파일 리스트로 만들기
+file_list <- list.files(dir)
+substr(file_list[1],15,16)
+
+# 데이터 불러오기 및 합치기
+data <- data.frame()
+
+for(file in file_list){
+  print(file)
+  temp <- read.csv(paste(dir,file,sep="/"))
+  temp <- temp %>% 
+  mutate(fshrbt_lon_val = fshrbt_lon_val/60/10000,
+         fshrbt_lat_val = fshrbt_lat_val/60/10000,
+         fshrbt_spd_val = fshrbt_spd_val/10,
+         fshrbt_drc_val = fshrbt_drc_val/10)
+  # sf데이터로 바꾸기 및 crs 지정
+  temp <- st_as_sf(temp, coords = c("fshrbt_lon_val",
+                                        "fshrbt_lat_val")) %>% st_set_crs(4326)
+  temp <- st_transform(temp, 27700)
+  v_gid3 <- st_intersection(temp, gid_3)
+  v_epdo <- v_gid3 %>%st_drop_geometry() %>%  group_by(fshrbt_rfid) %>% summarise(epdo_sum = sum(EPDO,na.rm=T))
+  data <- rbind(v_epdo,data)
+  save(data,file = "선박별_격자epdo합산.rda")
+}
+
+# 각 날짜별 그룹별 운항시간에 대한 결과를 다시 합산해줌
+data2 <- data %>% group_by(fshrbt_rfid) %>% summarise(epdo_sum = sum(epdo_sum,na.rm=T))
+
+# 최종 결과 (선박 정보데이터에 join)
+shipa$RFID <- shipa$RFID %>% as.character()
+ship_plus <- left_join(shipa,data2,by=c("RFID"="fshrbt_rfid"))
+save(ship_plus, file = "result_rfidSum.rda")
+load("result_rfidSum.rda")
+
+```
+
